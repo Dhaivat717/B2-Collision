@@ -7,12 +7,16 @@ public class PrismManager : MonoBehaviour
 {
     public int prismCount = 10;
     public float prismRegionRadiusXZ = 5;
-    public float prismRegionRadiusY = 5; public float maxPrismScaleXZ = 5;
+    public float prismRegionRadiusY = 5;
+    public float maxPrismScaleXZ = 5;
     public float maxPrismScaleY = 5;
     public GameObject regularPrismPrefab;
     public GameObject irregularPrismPrefab;
 
-    private KdTree<Prism> prisms = new KdTree<Prism>();
+
+    public bool seeGrid = true, seeBoxes = false;
+
+    private List<Prism> prisms = new List<Prism>();
     private List<GameObject> prismObjects = new List<GameObject>();
     private GameObject prismParent;
     private Dictionary<Prism, bool> prismColliding = new Dictionary<Prism, bool>();
@@ -28,49 +32,58 @@ public class PrismManager : MonoBehaviour
         prismParent = GameObject.Find("Prisms");
         for (int i = 0; i < prismCount; i++)
         {
-            var randPointCount = Mathf.RoundToInt(3 + Random.value * 7);
-            var randYRot = Random.value * 360;
-            var randScale = new Vector3((Random.value - 0.5f) * 2 * maxPrismScaleXZ, (Random.value - 0.5f) * 2 * maxPrismScaleY, (Random.value - 0.5f) * 2 * maxPrismScaleXZ);
-            var randPos = new Vector3((Random.value - 0.5f) * 2 * prismRegionRadiusXZ, (Random.value - 0.5f) * 2 * prismRegionRadiusY, (Random.value - 0.5f) * 2 * prismRegionRadiusXZ);
+            var randomPtCount = Mathf.RoundToInt(3 + Random.value * 7);
+            var randomYRot = Random.value * 360;
+            var randomScale = new Vector3((Random.value - 0.5f) * 2 * maxPrismScaleXZ, (Random.value - 0.5f) * 2 * maxPrismScaleY, (Random.value - 0.5f) * 2 * maxPrismScaleXZ);
+            var randomPos = new Vector3((Random.value - 0.5f) * 2 * prismRegionRadiusXZ, (Random.value - 0.5f) * 2 * prismRegionRadiusY, (Random.value - 0.5f) * 2 * prismRegionRadiusXZ);
 
             GameObject prism = null;
             Prism prismScript = null;
             if (Random.value < 0.5f)
             {
-                prism = Instantiate(regularPrismPrefab, randPos, Quaternion.Euler(0, randYRot, 0));
+                prism = Instantiate(regularPrismPrefab, randomPos, Quaternion.Euler(0, randomYRot, 0));
                 prismScript = prism.GetComponent<RegularPrism>();
             }
             else
             {
-                prism = Instantiate(irregularPrismPrefab, randPos, Quaternion.Euler(0, randYRot, 0));
+                prism = Instantiate(irregularPrismPrefab, randomPos, Quaternion.Euler(0, randomYRot, 0));
                 prismScript = prism.GetComponent<IrregularPrism>();
             }
             prism.name = "Prism " + i;
-            prism.transform.localScale = randScale;
+            prism.transform.localScale = randomScale;
             prism.transform.parent = prismParent.transform;
-            prismScript.pointCount = randPointCount;
+            prismScript.pointCount = randomPtCount;
             prismScript.prismObject = prism;
+
+            prismScript.num = i;
+            //prismScript.setBounds();
 
             prisms.Add(prismScript);
             prismObjects.Add(prism);
             prismColliding.Add(prismScript, false);
         }
+
         StartCoroutine(Run());
     }
 
     void Update()
     {
-
         #region Visualization
 
         DrawPrismRegion();
         DrawPrismWireFrames();
 
+        if (seeGrid)
+            DrawGridLines();
+
+        if (seeBoxes)
+            DrawBoxes();
+
 #if UNITY_EDITOR
-        if (Application.isFocused)
-        {
-            UnityEditor.SceneView.FocusWindowIfItsOpen(typeof(UnityEditor.SceneView));
-        }
+            if (Application.isFocused)
+            {
+                UnityEditor.SceneView.FocusWindowIfItsOpen(typeof(UnityEditor.SceneView));
+            }
 #endif
 
         #endregion
@@ -95,9 +108,6 @@ public class PrismManager : MonoBehaviour
                     prismColliding[collision.b] = true;
 
                     ResolveCollision(collision);
-
-
-                    prisms.UpdatePositions();
                 }
             }
 
@@ -107,246 +117,264 @@ public class PrismManager : MonoBehaviour
 
     #endregion
 
-    #region Incomplete Functions
+    #region COMPLETE Functions
 
 
+    public int Quadtree_Depth = 5;
     private IEnumerable<PrismCollision> PotentialCollisions()
     {
 
-        foreach (var p in prisms)
+
+
+
+        foreach (Prism p in prisms)
         {
-            Debug.Log(p.name);
-            var nb = prisms.FindClosest(p.transform.position); //to find the closest polygon to given position
-            if (nb != p)
+            p.setBounds();
+        }
+        QuadTree tree = new QuadTree(Quadtree_Depth, new Vector2(0.0f, 0.0f), prismRegionRadiusXZ);
+
+        HashSet<int> collisionKeys = new HashSet<int>();
+        List<PrismCollision> colList = new List<PrismCollision>();
+
+        foreach (Prism p in prisms)
+        {
+            List<Prism[]> cols = tree.register(p);
+
+            if (cols.Count == 0)
             {
-                var checkPrisms = new PrismCollision
-                {
-                    a = p,
-                    b = nb
-                };
-
-
-                yield return checkPrisms;
+                //print("0 collisions");
+                continue;
             }
 
+            //print(cols.Count);
+
+            foreach (Prism[] col in cols)
+            {
+                // very simply: order prisms from 0 to n-1, use the key n*bigger + smaller
+                int bigger = max(col[0].num, col[1].num), smaller = min(col[0].num, col[1].num);
+                int key = bigger * prismCount + smaller;
+
+                //print("Made it here");
+
+                // check if this key (unique for every combination of 2 prisms) is NOT already in the set
+                if (!collisionKeys.Contains(key))
+                {
+                    var check = new PrismCollision();
+                    check.a = col[0];
+                    check.b = col[1];
+
+                    //print("Collision between " + col[0].num + " and " + col[1].num);
+                    collisionKeys.Add(key);
+                    colList.Add(check);
+                }
+            }
         }
 
-        yield break;
+
+        return colList;
     }
-    private Vector3 FarthestPoint(Vector3[] vertices, Vector3 d)
+
+
+
+    private bool CheckCollision(PrismCollision collision)
     {
-        // Return the farthest point in vertices along direction d
 
-        float highest = -float.MaxValue;
-        Vector3 support = Vector3.zero;
 
-        foreach (var v in vertices)
+        var prism1 = collision.a;
+        var prism2 = collision.b;
+
+
+        Vector3 offset = new Vector3(0, 1, 0);
+
+
+
+        List<Vector3> simplex = new List<Vector3>();
+
+        Vector3 initDir = new Vector3(1, 0, 0);
+        simplex.Add(MinkowskiSupport(prism1.points, prism2.points, initDir));
+        initDir = -initDir;
+
+
+        while (true)
         {
-            /* float dot = v.x * d.x + v.y * d.y;*/
-            float dot = Vector3.Dot(v, d);
+            simplex.Add(MinkowskiSupport(prism1.points, prism2.points, initDir));
+
+
+            if (Vector3.Dot(simplex.Last(), initDir) <= 0)
+            {
+                return false;
+            }
+            else
+            {
+                var values = containsOrigin(simplex, initDir);
+                initDir = values.Item2;
+                if (values.Item1)
+                {
+                    break;
+                }
+            }
+        }
+
+
+
+
+
+
+
+
+        List<Edge> edges = new List<Edge>();
+        for (int x = 0; x < simplex.Count; x++)
+        {
+            for (int y = x + 1; y < simplex.Count; y++)
+            {
+                Edge e = new Edge(simplex[x], simplex[y]);
+                if (!edges.Contains(e))
+                {
+                    edges.Add(e);
+                }
+            }
+        }
+
+
+        float improvement = 10, best = -1, bestdist = -1;
+        int curpos;
+
+        while (improvement > 0.5)
+        {
+
+            curpos = -1;
+            bestdist = -1;
+
+            for (int pos = 0; pos < edges.Count; pos++)
+            {
+                float result = edges[pos].originDistance();
+                if (bestdist < 0 || result < bestdist)
+                {
+                    bestdist = result;
+                    curpos = pos;
+                }
+            }
+
+            best = bestdist;
+
+            Vector3 newPoint = MinkowskiSupport(prism1.points, prism2.points, edges[curpos].normal());
+
+            simplex.Add(newPoint);
+            edges.Add(new Edge(edges[curpos].v1, newPoint));
+            edges.Add(new Edge(newPoint, edges[curpos].v2));
+
+            edges.Remove(edges[curpos]);
+
+            float newOD1 = edges[edges.Count - 2].originDistance();
+            float newOD2 = edges[edges.Count - 1].originDistance();
+
+            bestdist = min(newOD1, newOD2);
+
+            improvement = best - bestdist;
+        }
+
+        curpos = -1;
+        bestdist = -1;
+
+        for (int pos = 0; pos < edges.Count; pos++)
+        {
+            float result = edges[pos].originDistance();
+            if (bestdist < 0 || result < bestdist)
+            {
+                bestdist = result;
+                curpos = pos;
+            }
+        }
+
+        collision.penetrationDepthVectorAB = edges[curpos].normal() * (bestdist + 0.05f);
+
+        #endregion
+
+        return true;
+    }
+
+    private (bool, Vector3) containsOrigin(List<Vector3> simplex, Vector3 dir)
+    {
+        Vector3 a = simplex.Last();
+        Vector3 a0 = -a;
+
+        if (simplex.Count == 3)
+        {
+            Vector3 b = simplex.ElementAt(1);
+            Vector3 c = simplex.ElementAt(0);
+
+            Vector3 ab = b - a;
+            Vector3 ac = c - a;
+
+            Vector3 abNor = tripleProduct(ac, ab, ab);
+            Vector3 acNor = tripleProduct(ab, ac, ac);
+
+            if (Vector3.Dot(abNor, a0) > 0)
+            {
+                simplex.Remove(c);
+                dir = abNor;
+            }
+            else if (Vector3.Dot(acNor, a0) > 0)
+            {
+                simplex.Remove(b);
+                dir = acNor;
+            }
+            else
+            {
+                return (true, dir);
+            }
+        }
+        else
+        {
+            Vector3 b = simplex.ElementAt(0);
+            Vector3 ab = b - a;
+            Vector3 abNor = tripleProduct(ab, a0, ab);
+            dir = abNor;
+        }
+
+        return (false, dir);
+    }
+
+    private Vector3 tripleProduct(Vector3 a, Vector3 b, Vector3 c)
+    {
+        return Vector3.Cross(Vector3.Cross(a, b), c);
+    }
+
+    private Vector3 MinkowskiSupport(Vector3[] shape1, Vector3[] shape2, Vector3 vec)
+    {
+        Vector3 p1 = FarthestPointInDirection(shape1, vec);
+        Vector3 p2 = FarthestPointInDirection(shape2, -vec);
+
+        return p1 - p2;
+    }
+
+    private Vector3 FarthestPointInDirection(Vector3[] vertices, Vector3 vec)
+    {
+        float highest = -float.MaxValue;
+        Vector3 support = new Vector3(0, 0, 0);
+
+        foreach (Vector3 v in vertices)
+        {
+            float dot = Vector3.Dot(v, vec);
+
             if (dot > highest)
             {
                 highest = dot;
                 support = v;
             }
         }
+
         return support;
     }
-    private Vector3 GetSupport(Prism A, Prism B, Vector3 d)
-    {
-        //Finds the support vector by subtracting the farthest point in B along -d from the farthest point in A along d, the opposite direction.
-        return FarthestPoint(A.points, d) - FarthestPoint(B.points, -d);
-    }
-
-    public Vector3 TripleProduct(Vector3 a, Vector3 b, Vector3 c)
-    {
-        return (b * Vector3.Dot(a, c)) - (a * Vector3.Dot(b, c));
-    }
-    private bool CheckOrigin(Simplex s)
-    {
-        // Count of points in simplex.
-        var simplexCount = s.numPoints;
-
-        // Get first point in simplex
-
-        var A = s.GetLast();
-
-        // Negate A
-        var A0 = -A;
-
-        if (simplexCount == 2)
-        {
-            // 2 points is a line
-
-            var B = s.points[0];
-
-            // Find AB
-            var AB = B - A;
-
-            // Find perpendicular of AB
-
-            var abPerp = TripleProduct(AB, A0, AB);
-
-            // set the new direction to perpendicular of AB so we can find another point along it and form a 3-Simplex (Triangle)
-            s.direction = abPerp;
-            if (s.direction.sqrMagnitude <= Mathf.Pow(10, 6))
-            {
-                s.direction = new Vector3(AB.z, 0.0f, -AB.x);
-            }
 
 
-        }
-        else if (simplexCount == 3)
-        {
-            // 3 points is a triangle.
-
-            // Find the rest of the points in the simplex.
-            var B = s.points[1];
-            var C = s.points[0];
-
-            // Find edges of triangle.
-            var AB = B - A;
-            var AC = C - A;
-
-            // Find each edge's perpendicular.
-            /*  var abPerp = TripleProduct(AC, AB, AB);
-              var acPerp = TripleProduct(AB, AC, AC);
-  */
-            Vector3 acPerp = new Vector3();
-            float dot = AB.x * AC.z - AC.x * AB.z;
-            acPerp.x = -AC.z * dot;
-            acPerp.z = AC.x * dot;
-
-            // Check for origin with perp. of AB
-            if (Vector3.Dot(acPerp, A0) >= 0f)
-            {
-                Debug.Log("removing B" + B);
-                s.Remove(B);
-                // Set the new direction to perpendicular of AB so we can find a point that works, unlike C
-                s.direction = acPerp;
-            }
-            else
-            {
-                Vector3 abPerp = new Vector3();
-                abPerp.x = AB.z * dot;
-                abPerp.z = -AB.x * dot;
-                // Check for origin with perp. of AC
-                if (Vector3.Dot(abPerp, A0) >= 0f)
-                {
-                    Debug.Log("removing C" + C);
-
-                    s.Remove(C);
-                    // Set the new direction to perpendicular of AC so we can find a point that works, unlike B.
-                    s.direction = abPerp;
-                }
-                else
-                {
-                    // Origin Found
-                    return true;
-                }
-            }
-        }
-        return false;
-
-    }
-    private Simplex GJK(Prism prismA, Prism prismB, Vector3 dir)
-    {
-        Simplex s = new Simplex
-        {
-            direction = dir
-        };
-        //First point on the edge of the minkowski difference. 1-Simplex.
-        s.Add(GetSupport(prismA, prismB, dir));
-        //s.points.ForEach(x => print(x));
-        //Point in opposite direction
-        s.direction = -s.direction;
-
-        while (true)
-        {
-            //Add the point to the simplex. 2-Simplex.
-            s.Add(GetSupport(prismA, prismB, s.direction));
-
-            if (Vector3.Dot(s.GetLast(), s.direction) <= 0)
-            {
-                //point does not pass origin so do not add it.
-                return null;
-            }
-            else
-            {
-                //CheckOrigin automatically updates the direction parameter on every call. If it doesnt that means we found the origin.
-
-                if (CheckOrigin(s))
-                {
-
-                    print("found origin");
-                    return s;
-                }
-
-                Debug.Log(prismA.name + " " + prismB.name);
-            }
-        }
-    }
-    private Vector3 EPA(Simplex s, Prism A, Prism B)
-    {
-
-        while (true)
-        {
-            var e = s.ClosestEdge();
-
-            var point = GetSupport(A, B, e.direction);
-
-            var d = Vector3.Dot(point, e.direction);
-            if (d - e.distance < Mathf.Pow(10, 6))
-            {
-                Debug.Log(s.numPoints);
-                var normal = e.direction;
-                var depth = d;
-                print("in epa");
-                return normal * depth;
-            }
-            else
-            {
-                // Insert point between points in closestEdge.
-                Debug.Log("in epa adding point" + point + " " + e.index);
-                s.Add(point, e.index);
-            }
-
-        }
-    }
-
-    private bool CheckCollision(PrismCollision collision)
-    {
-
-        var pA = collision.a;
-        var pB = collision.b;
-
-        var cA = pA.transform.position;
-        var cB = pB.transform.position;
-
-        Vector3 d = cB - cA;
-
-        Simplex GJKVec = GJK(pA, pB, d);
-
-        if (GJKVec != null)
-        {
-
-            print("GJK Not null, starting EPA " + pA.name + " " + pB.name);
-            collision.penetrationDepthVectorAB = EPA(GJKVec, pA, pB);
-            return true;
-        }
-        else
-        {
-            return false;
-        }
-    }
-
-    #endregion
 
     #region Private Functions
 
     private void ResolveCollision(PrismCollision collision)
     {
-        print("RESOLVING");
+        var prismObj1 = collision.a.prismObject;
+        var prismObj2 = collision.b.prismObject;
 
         var pushA = -collision.penetrationDepthVectorAB / 2;
         var pushB = collision.penetrationDepthVectorAB / 2;
@@ -355,11 +383,31 @@ public class PrismManager : MonoBehaviour
         {
             collision.a.points[i] += pushA;
         }
-
         for (int i = 0; i < collision.b.pointCount; i++)
         {
             collision.b.points[i] += pushB;
         }
+
+    }
+
+    private int max(int a, int b)
+    {
+        if (a > b)
+            return a;
+        return b;
+    }
+    private int min(int a, int b)
+    {
+        if (a < b)
+            return a;
+        return b;
+    }
+
+    private float min(float a, float b)
+    {
+        if (a < b)
+            return a;
+        return b;
     }
 
     #endregion
@@ -412,6 +460,35 @@ public class PrismManager : MonoBehaviour
         }
     }
 
+    private void DrawGridLines()
+    {
+        QuadTree tree = new QuadTree(Quadtree_Depth, new Vector2(0.0f, 0.0f), prismRegionRadiusXZ);
+
+        tree.draw();
+    }
+
+    private void DrawBoxes()
+    {
+        Color c = Color.white;
+        Vector3 botLeft, topLeft, botRight, topRight;
+
+        foreach (Prism p in prisms)
+        {
+            if (p.bounds.Length == 0)
+                continue;
+
+            botLeft = new Vector3(p.bounds[0].x, 0, p.bounds[0].y);
+            topLeft = new Vector3(p.bounds[0].x, 0, p.bounds[1].y);
+            botRight = new Vector3(p.bounds[1].x, 0, p.bounds[0].y);
+            topRight = new Vector3(p.bounds[1].x, 0, p.bounds[1].y);
+
+            Debug.DrawLine(botLeft, topLeft, c);
+            Debug.DrawLine(botLeft, botRight, c);
+            Debug.DrawLine(topLeft, topRight, c);
+            Debug.DrawLine(botRight, topRight, c);
+        }
+    }
+
     #endregion
 
     #region Utility Classes
@@ -423,7 +500,7 @@ public class PrismManager : MonoBehaviour
         public Vector3 penetrationDepthVectorAB;
     }
 
-    private class Tuple<K, V>
+    public class Tuple<K, V>
     {
         public K Item1;
         public V Item2;
@@ -432,6 +509,38 @@ public class PrismManager : MonoBehaviour
         {
             Item1 = k;
             Item2 = v;
+        }
+    }
+
+    private class Edge
+    {
+        public Vector3 v1, v2;
+
+        public Edge(Vector3 a, Vector3 b)
+        {
+            v1 = a;
+            v2 = b;
+        }
+
+        public bool Equals(Edge e)
+        {
+            return v1.Equals(e.v1) && v2.Equals(e.v2);
+        }
+
+        public float originDistance()
+        {
+            float numerator = System.Math.Abs(v2.x * v1.z - v2.z * v1.x);
+            float denom = (float)System.Math.Sqrt((v2.z - v1.z) * (v2.z - v1.z) + (v2.x - v1.x) * (v2.x - v1.x));
+
+            return numerator / denom;
+        }
+
+        public Vector3 normal()
+        {
+            Vector3 AB = new Vector3(v2.x - v1.x, v2.y - v1.y, v2.z - v1.z);
+            Vector3 A0 = new Vector3(v1.x, v1.y, v1.z);
+
+            return (Vector3.Cross(Vector3.Cross(AB, A0), AB)).normalized;
         }
     }
 
